@@ -1,0 +1,21 @@
+# ===== Java / Maven =====
+target/
+*.log
+
+# ===== Spring Boot =====
+*.pid
+*.pid.lock
+
+# ===== IDE files =====
+.idea/
+.vscode/
+*.iml
+
+# ===== OS files =====
+.DS_Store
+Thumbs.db
+
+# ===== H2 / local DB files =====
+*.mv.db
+*.trace.db
+data/
