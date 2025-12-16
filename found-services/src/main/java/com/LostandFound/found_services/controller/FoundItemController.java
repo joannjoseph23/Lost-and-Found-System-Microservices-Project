@@ -14,7 +14,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import com.LostandFound.found_services.model.FoundItem;
 import com.LostandFound.found_services.repo.FoundItemRepository;
-@CrossOrigin(origins = "*")
+
 @RestController
 @RequestMapping("/found-items")
 public class FoundItemController {

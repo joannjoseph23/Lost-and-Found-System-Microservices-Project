@@ -56,7 +56,7 @@
       <groupId>org.springframework.cloud</groupId>
       <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
     </dependency>
-
+    
     <!-- JWT (JJWT) -->
     <dependency>
       <groupId>io.jsonwebtoken</groupId>

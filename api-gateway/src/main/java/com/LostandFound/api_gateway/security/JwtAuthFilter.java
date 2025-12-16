@@ -1,7 +1,6 @@
 package com.LostandFound.api_gateway.security;
 
 import java.nio.charset.StandardCharsets;
-
 import javax.crypto.SecretKey;
 
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
@@ -20,7 +19,6 @@ import reactor.core.publisher.Mono;
 @Component
 public class JwtAuthFilter implements GlobalFilter {
 
-    // IMPORTANT: must match auth-service secret
     private static final String SECRET =
             "CHANGE_THIS_TO_A_LONG_RANDOM_SECRET_32+_CHARS";
 
@@ -30,17 +28,40 @@ public class JwtAuthFilter implements GlobalFilter {
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
 
-        String path = exchange.getRequest().getURI().getPath();
+        // ✅ Better path handling (important with StripPrefix)
+        String path = exchange.getRequest().getPath().value();
         String method = exchange.getRequest().getMethod() == null
                 ? ""
                 : exchange.getRequest().getMethod().name();
 
+        // debug logging
+        System.out.println("[GW] " + method + " " + path);
+
+        // ✅ Allow browser preflight
+        if ("OPTIONS".equalsIgnoreCase(method)) {
+            return chain.filter(exchange);
+        }
+
         // -------- PUBLIC ROUTES --------
+
+        // auth service
         if (path.startsWith("/auth")) {
             return chain.filter(exchange);
         }
 
+        // found items (GET only)
         if (path.startsWith("/found") && "GET".equals(method)) {
+            return chain.filter(exchange);
+        }
+
+        // public images
+        if (path.startsWith("/uploads") && "GET".equals(method)) {
+            return chain.filter(exchange);
+        }
+
+        // ✅ test-service public endpoints (works with StripPrefix=1 too)
+        if (path.equals("/ping") || path.equals("/health")
+                || path.startsWith("/test/ping") || path.startsWith("/test/health")) {
             return chain.filter(exchange);
         }
 
@@ -63,8 +84,10 @@ public class JwtAuthFilter implements GlobalFilter {
                     .parseClaimsJws(token)
                     .getBody();
 
+            System.out.println("JWT CLAIMS = " + claims);
+
             String role = claims.get("role", String.class);
-            String tokenUsername = claims.getSubject(); // JWT "sub"
+            String jwtUsername = claims.getSubject(); // sub = username
 
             // -------- FOUND --------
             if (path.startsWith("/found")
@@ -94,27 +117,34 @@ public class JwtAuthFilter implements GlobalFilter {
             }
 
             // -------- MATCH --------
-            if (path.startsWith("/match")) {
+            if (path.startsWith("/matches")) {
 
-                // USER: can ONLY access their own matches
-                if ("GET".equals(method)
-                        && path.startsWith("/match/matches/by-user/")) {
+                // USER fetching their own matches
+                if ("GET".equals(method) && path.startsWith("/matches/by-user/")) {
 
-                    if (!"USER".equals(role)) {
+                    if (!"USER".equals(role) && !"ADMIN".equals(role)) {
                         exchange.getResponse().setStatusCode(HttpStatus.FORBIDDEN);
                         return exchange.getResponse().setComplete();
                     }
 
                     String requestedUsername =
-                            path.substring("/match/matches/by-user/".length());
+                            path.substring("/matches/by-user/".length());
 
-                    // safety cleanup
-                    if (requestedUsername.contains("/")) {
-                        requestedUsername =
-                                requestedUsername.substring(0, requestedUsername.indexOf("/"));
+                    int slash = requestedUsername.indexOf("/");
+                    if (slash >= 0) {
+                        requestedUsername = requestedUsername.substring(0, slash);
                     }
 
-                    if (!requestedUsername.equals(tokenUsername)) {
+                    int qmark = requestedUsername.indexOf("?");
+                    if (qmark >= 0) {
+                        requestedUsername = requestedUsername.substring(0, qmark);
+                    }
+
+                    System.out.println("[GW MATCH] requested=" + requestedUsername
+                            + " jwt=" + jwtUsername + " role=" + role);
+
+                    // ADMIN can view all, USER only self
+                    if (!"ADMIN".equals(role) && !requestedUsername.equals(jwtUsername)) {
                         exchange.getResponse().setStatusCode(HttpStatus.FORBIDDEN);
                         return exchange.getResponse().setComplete();
                     }
@@ -122,13 +152,15 @@ public class JwtAuthFilter implements GlobalFilter {
                     return chain.filter(exchange);
                 }
 
-                // ADMIN: everything else under /match
+                // everything else under /matches → ADMIN only
                 if (!"ADMIN".equals(role)) {
                     exchange.getResponse().setStatusCode(HttpStatus.FORBIDDEN);
                     return exchange.getResponse().setComplete();
                 }
             }
 
+            // -------- TEST (secure endpoint) --------
+            // /test/secure automatically reaches here → token required
             return chain.filter(exchange);
 
         } catch (JwtException e) {
