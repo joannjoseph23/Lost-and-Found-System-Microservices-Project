@@ -4,10 +4,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
-import org.springframework.http.MediaType;
+import java.util.stream.Collectors;
 
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -30,22 +33,33 @@ public class FoundItemController {
         return "OK";
     }
 
+    // ✅ helper: trim + lowercase + unique
+    private List<String> normalizeKeywords(List<String> keywords) {
+        if (keywords == null) return List.of();
+        Set<String> uniq = new LinkedHashSet<>();
+        for (String k : keywords) {
+            if (k == null) continue;
+            String v = k.trim().toLowerCase();
+            if (!v.isBlank()) uniq.add(v);
+        }
+        return uniq.stream().collect(Collectors.toList());
+    }
+
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public FoundItem create(
             @RequestParam("image") MultipartFile image,
             @RequestParam("title") String title,
             @RequestParam(value = "description", required = false) String description,
-            @RequestParam(value = "location", required = false) String location
+            @RequestParam(value = "location", required = false) String location,
+            // ✅ NEW: frontend sends repeated keywords params
+            @RequestParam(value = "keywords", required = false) List<String> keywords
     ) throws Exception {
 
         // Store image locally
         Path uploadDir = Paths.get("uploads");
         Files.createDirectories(uploadDir);
 
-        String original = image.getOriginalFilename() == null
-                ? ""
-                : image.getOriginalFilename();
-
+        String original = image.getOriginalFilename() == null ? "" : image.getOriginalFilename();
         String ext = original.contains(".")
                 ? original.substring(original.lastIndexOf("."))
                 : ".jpg";
@@ -53,11 +67,7 @@ public class FoundItemController {
         String filename = UUID.randomUUID() + ext;
         Path target = uploadDir.resolve(filename);
 
-        Files.copy(
-                image.getInputStream(),
-                target,
-                StandardCopyOption.REPLACE_EXISTING
-        );
+        Files.copy(image.getInputStream(), target, StandardCopyOption.REPLACE_EXISTING);
 
         FoundItem item = new FoundItem();
         item.setTitle(title);
@@ -65,6 +75,9 @@ public class FoundItemController {
         item.setLocation(location);
         item.setStatus("AVAILABLE");
         item.setImagePath("/uploads/" + filename);
+
+        // ✅ persist keywords
+        item.setKeywords(normalizeKeywords(keywords));
 
         return repo.save(item);
     }
@@ -88,12 +101,18 @@ public class FoundItemController {
     ) {
         return repo.findById(id)
                 .map(existing -> {
-                    existing.setTitle(body.getTitle());
+
+                    if (body.getTitle() != null) existing.setTitle(body.getTitle());
                     existing.setDescription(body.getDescription());
                     existing.setLocation(body.getLocation());
 
                     if (body.getStatus() != null) {
                         existing.setStatus(body.getStatus());
+                    }
+
+                    // ✅ update keywords when provided
+                    if (body.getKeywords() != null) {
+                        existing.setKeywords(normalizeKeywords(body.getKeywords()));
                     }
 
                     return ResponseEntity.ok(repo.save(existing));

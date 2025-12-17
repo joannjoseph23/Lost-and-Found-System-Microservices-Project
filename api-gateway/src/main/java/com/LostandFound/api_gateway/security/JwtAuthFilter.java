@@ -19,6 +19,7 @@ import reactor.core.publisher.Mono;
 @Component
 public class JwtAuthFilter implements GlobalFilter {
 
+    // IMPORTANT: must match auth-service secret
     private static final String SECRET =
             "CHANGE_THIS_TO_A_LONG_RANDOM_SECRET_32+_CHARS";
 
@@ -28,44 +29,41 @@ public class JwtAuthFilter implements GlobalFilter {
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
 
-        // ✅ Better path handling (important with StripPrefix)
         String path = exchange.getRequest().getPath().value();
         String method = exchange.getRequest().getMethod() == null
                 ? ""
                 : exchange.getRequest().getMethod().name();
 
-        // debug logging
         System.out.println("[GW] " + method + " " + path);
 
-        // ✅ Allow browser preflight
+        // Allow browser preflight
         if ("OPTIONS".equalsIgnoreCase(method)) {
             return chain.filter(exchange);
         }
 
-        // -------- PUBLIC ROUTES --------
+        // ---------------- PUBLIC ----------------
 
-        // auth service
+        // Auth endpoints
         if (path.startsWith("/auth")) {
             return chain.filter(exchange);
         }
 
-        // found items (GET only)
-        if (path.startsWith("/found") && "GET".equals(method)) {
+        // Found items GET is public
+        if ((path.startsWith("/found") || path.startsWith("/found-items")) && "GET".equals(method)) {
             return chain.filter(exchange);
         }
 
-        // public images
+        // Found images public
         if (path.startsWith("/uploads") && "GET".equals(method)) {
             return chain.filter(exchange);
         }
 
-        // ✅ test-service public endpoints (works with StripPrefix=1 too)
-        if (path.equals("/ping") || path.equals("/health")
-                || path.startsWith("/test/ping") || path.startsWith("/test/health")) {
+        // Lost images public
+        if (path.startsWith("/lost-uploads") && "GET".equals(method)) {
             return chain.filter(exchange);
         }
 
-        // -------- AUTH REQUIRED --------
+        // ---------------- AUTH REQUIRED ----------------
         String authHeader = exchange.getRequest()
                 .getHeaders()
                 .getFirst(HttpHeaders.AUTHORIZATION);
@@ -89,11 +87,9 @@ public class JwtAuthFilter implements GlobalFilter {
             String role = claims.get("role", String.class);
             String jwtUsername = claims.getSubject(); // sub = username
 
-            // -------- FOUND --------
-            if (path.startsWith("/found")
-                    && ("POST".equals(method)
-                    || "PUT".equals(method)
-                    || "DELETE".equals(method))) {
+            // ---------------- FOUND (admin write) ----------------
+            if ((path.startsWith("/found") || path.startsWith("/found-items"))
+                    && ("POST".equals(method) || "PUT".equals(method) || "DELETE".equals(method))) {
 
                 if (!"ADMIN".equals(role)) {
                     exchange.getResponse().setStatusCode(HttpStatus.FORBIDDEN);
@@ -101,25 +97,55 @@ public class JwtAuthFilter implements GlobalFilter {
                 }
             }
 
-            // -------- LOST --------
-            if (path.startsWith("/lost")) {
-                if ("POST".equals(method)) {
-                    if (!"USER".equals(role)) {
-                        exchange.getResponse().setStatusCode(HttpStatus.FORBIDDEN);
-                        return exchange.getResponse().setComplete();
-                    }
-                } else {
-                    if (!"ADMIN".equals(role)) {
-                        exchange.getResponse().setStatusCode(HttpStatus.FORBIDDEN);
-                        return exchange.getResponse().setComplete();
-                    }
+            // ---------------- LOST ----------------
+            // After StripPrefix=1, /lost/** becomes /lost-items/** (and /lost-uploads/** stays /lost-uploads/**)
+            boolean isLostApi = path.startsWith("/lost") || path.startsWith("/lost-items");
+
+            if (isLostApi) {
+                // USER is allowed to:
+                // - POST /lost-items (create)
+                // - GET /lost-items/user/{username} (read own list)
+                // ADMIN can do everything
+                if ("ADMIN".equals(role)) {
+                    return chain.filter(exchange);
                 }
+
+                // USER rules
+                if (!"USER".equals(role)) {
+                    exchange.getResponse().setStatusCode(HttpStatus.FORBIDDEN);
+                    return exchange.getResponse().setComplete();
+                }
+
+                // allow POST create
+                if ("POST".equals(method) && (path.equals("/lost-items") || path.equals("/lost/lost-items"))) {
+                    return chain.filter(exchange);
+                }
+
+                // allow GET list-by-user ONLY for self
+                if ("GET".equals(method) && path.startsWith("/lost-items/user/")) {
+                    String requested = path.substring("/lost-items/user/".length());
+                    int slash = requested.indexOf("/");
+                    if (slash >= 0) requested = requested.substring(0, slash);
+                    int qmark = requested.indexOf("?");
+                    if (qmark >= 0) requested = requested.substring(0, qmark);
+
+                    if (!requested.equals(jwtUsername)) {
+                        exchange.getResponse().setStatusCode(HttpStatus.FORBIDDEN);
+                        return exchange.getResponse().setComplete();
+                    }
+                    return chain.filter(exchange);
+                }
+
+                // Everything else in lost-api for USER is blocked (ex: GET /lost-items/{id})
+                exchange.getResponse().setStatusCode(HttpStatus.FORBIDDEN);
+                return exchange.getResponse().setComplete();
             }
 
-            // -------- MATCH --------
+            // ---------------- MATCH ----------------
+            // After StripPrefix=1, /match/** becomes /matches/**
             if (path.startsWith("/matches")) {
 
-                // USER fetching their own matches
+                // USER can fetch their own matches
                 if ("GET".equals(method) && path.startsWith("/matches/by-user/")) {
 
                     if (!"USER".equals(role) && !"ADMIN".equals(role)) {
@@ -127,24 +153,14 @@ public class JwtAuthFilter implements GlobalFilter {
                         return exchange.getResponse().setComplete();
                     }
 
-                    String requestedUsername =
-                            path.substring("/matches/by-user/".length());
-
-                    int slash = requestedUsername.indexOf("/");
-                    if (slash >= 0) {
-                        requestedUsername = requestedUsername.substring(0, slash);
-                    }
-
-                    int qmark = requestedUsername.indexOf("?");
-                    if (qmark >= 0) {
-                        requestedUsername = requestedUsername.substring(0, qmark);
-                    }
-
-                    System.out.println("[GW MATCH] requested=" + requestedUsername
-                            + " jwt=" + jwtUsername + " role=" + role);
+                    String requested = path.substring("/matches/by-user/".length());
+                    int slash = requested.indexOf("/");
+                    if (slash >= 0) requested = requested.substring(0, slash);
+                    int qmark = requested.indexOf("?");
+                    if (qmark >= 0) requested = requested.substring(0, qmark);
 
                     // ADMIN can view all, USER only self
-                    if (!"ADMIN".equals(role) && !requestedUsername.equals(jwtUsername)) {
+                    if (!"ADMIN".equals(role) && !requested.equals(jwtUsername)) {
                         exchange.getResponse().setStatusCode(HttpStatus.FORBIDDEN);
                         return exchange.getResponse().setComplete();
                     }
@@ -152,15 +168,13 @@ public class JwtAuthFilter implements GlobalFilter {
                     return chain.filter(exchange);
                 }
 
-                // everything else under /matches → ADMIN only
+                // All other /matches/** → ADMIN only
                 if (!"ADMIN".equals(role)) {
                     exchange.getResponse().setStatusCode(HttpStatus.FORBIDDEN);
                     return exchange.getResponse().setComplete();
                 }
             }
 
-            // -------- TEST (secure endpoint) --------
-            // /test/secure automatically reaches here → token required
             return chain.filter(exchange);
 
         } catch (JwtException e) {

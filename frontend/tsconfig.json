@@ -29,6 +29,6 @@
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
     "**/*.mts"
-, "components/user/user-create-lost-item.tsxx"  ],
+, "components/user/user-create-lost-item.tsx"  ],
   "exclude": ["node_modules"]
 }
